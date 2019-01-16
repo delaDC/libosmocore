@@ -1156,4 +1156,128 @@ const struct value_string osmo_cm_service_type_names[] = {
 	{}
 };
 
+bool osmo_classmark1_is_r99(const struct gsm48_classmark1 *cm1)
+{
+	return cm1->rev_lev >= 2;
+}
+
+bool osmo_classmark2_is_r99(const uint8_t *cm2, uint8_t cm2_len)
+{
+	uint8_t rev_lev;
+	if (!cm2_len)
+		return false;
+	rev_lev = (cm2[0] >> 5) & 0x3;
+	return rev_lev >= 2;
+}
+
+/*! Return true if any of Classmark 1 or Classmark 2 are present and indicate R99 capability.
+ * \param[in] cm  Classmarks.
+ * \returns True if R99 or later, false if pre-R99 or no Classmarks are present.
+ */
+bool osmo_classmark_is_r99(const struct osmo_classmark *cm)
+{
+	if (cm->classmark1_set)
+		return osmo_classmark1_is_r99(&cm->classmark1);
+	return osmo_classmark2_is_r99(cm->classmark2, cm->classmark2_len);
+}
+
+/*! Return a string representation of A5 cipher algorithms indicated by Classmark 1, 2 and 3.
+ * \param[in] cm  Classmarks.
+ * \returns A statically allocated string like "cm1{a5/1=supported} cm2{0x23= A5/2 A5/3} no-cm3"
+ */
+const char *osmo_classmark_a5_name(const struct osmo_classmark *cm)
+{
+	static char buf[128];
+	char cm1[42];
+	char cm2[42];
+	char cm3[42];
+
+	if (cm->classmark1_set)
+		snprintf(cm1, sizeof(cm1), "cm1{a5/1=%s}",
+		     cm->classmark1.a5_1 ? "not-supported":"supported" /* inverted logic */);
+	else
+		snprintf(cm1, sizeof(cm1), "no-cm1");
+
+	if (cm->classmark2_len >= 3)
+		snprintf(cm2, sizeof(cm2), " cm2{0x%x=%s%s}",
+			 cm->classmark2[2],
+			 cm->classmark2[2] & 0x1 ? " A5/2" : "",
+			 cm->classmark2[2] & 0x2 ? " A5/3" : "");
+	else
+		snprintf(cm2, sizeof(cm2), " no-cm2");
+
+	if (cm->classmark3_len >= 1)
+		snprintf(cm3, sizeof(cm3), " cm3{0x%x=%s%s%s%s}",
+			 cm->classmark3[0],
+			 cm->classmark3[0] & (1 << 0) ? " A5/4" : "",
+			 cm->classmark3[0] & (1 << 1) ? " A5/5" : "",
+			 cm->classmark3[0] & (1 << 2) ? " A5/6" : "",
+			 cm->classmark3[0] & (1 << 3) ? " A5/7" : "");
+	else
+		snprintf(cm3, sizeof(cm3), " no-cm3");
+
+	snprintf(buf, sizeof(buf), "%s%s%s", cm1, cm2, cm3);
+	return buf;
+}
+
+/*! Determine if the given Classmark (1/2/3) value permits a given A5/n cipher.
+ * \param[in] cm  Classmarks.
+ * \param[in] a5  The N in A5/N for which to query whether support is indicated.
+ * \return 1 when the given A5/n is permitted, 0 when not (or a5 > 7), and negative if the respective MS Classmark is
+ *         not known, where the negative number indicates the classmark type: -2 means Classmark 2 is not available. The
+ *         idea is that when e.g. A5/3 is requested and the corresponding Classmark 3 is not available, that the caller
+ *         can react by obtaining Classmark 3 and calling again once it is available.
+ */
+int osmo_classmark_supports_a5(const struct osmo_classmark *cm, uint8_t a5)
+{
+	switch (a5) {
+	case 0:
+		/* all phones must implement A5/0, see 3GPP TS 43.020 4.9 */
+		return 1;
+	case 1:
+		/* 3GPP TS 43.020 4.9 requires A5/1 to be suppored by all phones and actually states:
+		 * "The network shall not provide service to an MS which indicates that it does not
+		 *  support the ciphering algorithm A5/1.".  However, let's be more tolerant based
+		 * on policy here */
+		/* See 3GPP TS 24.008 10.5.1.7 */
+		if (!cm->classmark1_set) {
+			return -1;
+		} else {
+			if (cm->classmark1.a5_1)
+				return 0;	/* Inverted logic for this bit! */
+			else
+				return 1;
+		}
+		break;
+	case 2:
+	case 3:
+		/* See 3GPP TS 24.008 10.5.1.6 */
+		if (cm->classmark2_len < 3) {
+			return -2;
+		} else {
+			if (cm->classmark2[2] & (1 << (a5-2)))
+				return 1;
+			else
+				return 0;
+		}
+		break;
+	case 4:
+	case 5:
+	case 6:
+	case 7:
+		/* See 3GPP TS 24.008 10.5.1.7 */
+		if (cm->classmark3_len < 1) {
+			return -3;
+		} else {
+			if (cm->classmark3[0] & (1 << (a5-4)))
+				return 1;
+			else
+				return 0;
+		}
+		break;
+	default:
+		return 0;
+	}
+}
+
 /*! @} */
